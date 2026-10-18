@@ -1,0 +1,8 @@
+# SYNTHETIC SAMPLE: invented data, not from any real company or sheet. Layout is a guess at an Excel sheet.
+idempotency_key,po_number,line_no,received_qty,rejected_qty,lot_batch,coc_received
+s-001,PO-9001,1,200,0,LOT-S1,yes
+s-002,PO-9001,2,120,0,LOT-S2,yes
+s-003,PO-9002,1,40,8,LOT-S3,yes
+s-004,PO-9002,2,300,0,LOT-S4,no
+s-001,PO-9001,1,200,0,LOT-S1,yes
+s-006,PO-9002,2,50,0,LOT-S5,maybe

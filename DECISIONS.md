@@ -1,0 +1,87 @@
+# DECISIONS
+
+One line per ambiguity resolved. Simplest option wins.
+
+- D1 (P1) Approval is PO-level but `status` lives on lines. Seeding and `POST approve` set all lines of a `po_number` together. PO value = SUM(ordered_qty * unit_price_inr) over its lines. (User chose option A.)
+- D2 (P1) Threshold rule is strictly greater than: total == threshold goes straight to `open`. Default 100,000 INR via `APPROVAL_THRESHOLD_INR`. ASSUMPTION, label in README.
+- D3 (P1) Plain SQL migration (`migrations/001_init.sql`) applied by `scripts/migrate.py`, not Alembic. Fewer moving parts for a 5-table prototype.
+- D4 (P1) SQLAlchemy models mirror the SQL by hand. SQL file is the source of truth. Drift risk accepted.
+- D5 (P1) Fixture dates are day offsets from the seed date, so overdue / at_risk cases stay true on any day.
+- D6 (P1) Seed wipes with TRUNCATE (not DELETE) because the ledger trigger blocks DELETE by design.
+- D7 (P1) Ledger append-only is enforced by a DB trigger, not just by convention.
+- D8 (P1) `receipt_events` has a CHECK that accepted + rejected + quarantined = received, so every unit lands in exactly one bucket.
+- D9 (P1) One receipt_events row per PO line received. One invoices row per invoice line, with UNIQUE (invoice_number, po_line_id).
+- D11 (P1) Database is Neon (hosted Postgres) instead of local. Same engine, so no code change beyond the driver scheme fix.
+- D12 (P1) Tests share the one Neon DB and call `seed()`, which wipes it. Acceptable for a prototype; do not store anything you care about there.
+- D13 (P2) outstanding_qty = max(0, ordered - (accepted + quarantined)). Rejected units stay outstanding (need replacing). Over-delivery excess is quarantined, so it never drives outstanding negative. May be revisited in P3.
+- D14 (P2) overdue = outstanding > 0 and (need_by < as_of or promised < as_of). A missed promise counts even if need-by is still ahead.
+- D15 (P2) at_risk = promised_date > need_by. no_promise_date = promised_date is null. Both only while outstanding > 0.
+- D16 (P2) Lines in pending_approval or already received carry no flags (nothing can be chased).
+- D17 (P2) Flags are computed on read, never stored. `as_of` query param (default today) makes them testable.
+- D18 (P2) PO-level status in listings is the common line status, or "mixed" if lines differ.
+- D19 (P2) Approving a PO that is not pending returns 409, unknown PO returns 404.
+- D20 (P2) API money and qty fields are floats for readable Swagger; arithmetic stays in Decimal.
+- D21 (P3) Ledger sign model: `receipt` = everything physically received; `quarantine` and `reject` subtract from available; `release_from_quarantine` adds back; `issue` subtracts. available = receipt - quarantine - reject + release - issue. physical = available + quarantined.
+- D22 (P3) Over-delivery rule: accepted stock may reach ordered * (1 + OVER_DELIVERY_TOLERANCE_PCT). Default 5%. ASSUMPTION, label in README. Excess beyond that is quarantined and flagged `over_delivery`. Within tolerance but above ordered is accepted and flagged `over_delivery_within_tolerance`.
+- D23 (P3) Tolerance is cumulative across receipts of one line (units already accepted or quarantined count).
+- D24 (P3) Missing CoC quarantines every otherwise-acceptable unit of that receipt (flag `missing_coc`).
+- D25 (P3) Rejected units are an inspection input on the receipt. They stay outstanding on the PO (need replacement).
+- D26 (P3) One receipt line per request, one idempotency key per request. No GRN header table (5-table limit).
+- D27 (P3) Duplicate key returns 409 with a clear message and writes nothing. A receipt for a pending_approval or closed line returns 409. Receiving into an already `received` line is allowed; the excess lands in quarantine.
+- D28 (P3) Release from quarantine references a receipt_id so the lot stays traceable, and cannot exceed what that receipt still holds in quarantine.
+- D29 (P3) Ledger writes take a row lock on the part (SELECT FOR UPDATE) so concurrent issues cannot both pass the stock check. NOT covered by a test.
+- D30 (P3) Line status after receipt: kept (accepted + quarantined) >= ordered -> received; > 0 -> partially_received; otherwise unchanged.
+- D31 (P4) Invoice price must equal PO unit price exactly. No tolerance, no tax logic. ASSUMPTION.
+- D32 (P4) "Accepted" for matching = receipt accepted_qty + units released from quarantine. Quarantined or rejected units cannot be invoiced.
+- D33 (P4) Quantities are compared cumulatively per PO line in invoice entry order, so the same goods cannot be invoiced twice. Earlier invoices are not re-judged by later ones.
+- D34 (P4) Reason codes in fixed order: no_receipt, qty_exceeds_accepted, qty_exceeds_po, price_differs_from_po. `no_receipt` suppresses `qty_exceeds_accepted`. `qty_exceeds_po` is the 4th code and the first to cut.
+- D35 (P4) Match results are derived on every read, never stored. A later receipt or release can turn a mismatch into a match.
+- D36 (P4) An invoice is all-or-nothing: an unknown line (404) or a repeated invoice+line (409) records nothing.
+- D37 (P5) Chase-eligible = overdue or at_risk (from P2 flags). Anything else returns 409.
+- D38 (P5) Template builds all facts; LLM only rewrites tone. Output is validated in code (PO number, outstanding qty, need-by, promised date, forbidden-language regex list). One regeneration with the failures fed back, then fall back to the template.
+- D39 (P5) No promised date: the draft states "no promised date on record" and asks the supplier to confirm one. The validator requires that exact phrase in that case.
+- D40 (P5) Forbidden-language list is deliberately conservative (includes "we will", "cancel", "legal"). A false positive costs one regeneration, then the clean template.
+- D41 (P5) Drafts are stored only in the response and `drafts_log/chase_drafts.jsonl` (path via CHASE_LOG_PATH). Every record carries sent=false. A test scans app/ for send-capable libraries.
+- D42 (P5) LLM is used only when both GROQ_API_KEY and GROQ_MODEL are set; model name is never hard-coded. Otherwise template, with a note in the record. (Originally Anthropic; see D47.)
+- D43 (P5) Using the LLM sends PO number, part, quantities, dates and supplier name to the LLM provider's API (Groq since D47). Fine for synthetic data; would need a data-handling decision for real data.
+- D44 (P6) Added one endpoint not in the original list: PATCH /purchase-orders/{po}/lines/{n}/promised-date. Scenario 10 ("promised date moved") cannot be shown without it. Frozen once the line is received or closed. Delete it if unwanted; only S10 depends on it.
+- D45 (P6) Invariants are checked in a fixture teardown after every scenario, so no scenario can forget them. A seeded random run (seed 42, 80 operations) also checks them.
+- D46 (P6) Scenario inputs and expected outcomes were written by me (the builder). They encode my guess at the workflow, so a pass is not evidence about real receiving.
+- D47 (post-P7) USER-DIRECTED CHANGE: LLM provider switched from the Anthropic SDK to Groq (free tier), overriding the original "Anthropic SDK" stack line. Same design: model name from env (GROQ_MODEL), key from env (GROQ_API_KEY), output validated in code, template fallback. Only the call shape changed (chat.completions). Tests use a fake client with the Groq/OpenAI response shape; the real Groq endpoint has NOT been exercised.
+- D48 (post-P7) Model output is typography-normalised before validation (Unicode hyphens and non-breaking spaces mapped to ASCII). Safe because it cannot change a fact; needed because gpt-oss rewrote "PO-1001" as "PO‑1001". An empty reply is reported as `empty_reply`. Calls use reasoning_effort="low" and max_tokens=3000 because the reasoning model otherwise exhausted the budget and returned "".
+- D49 (post-P7) Live model chosen by the user: `openai/gpt-oss-20b` on Groq, set in `.env` as GROQ_MODEL (not hard-coded in code).
+- D50 (CSV P1) Numbering for the CSV feature continues from D50, not D47 (D47 to D49 were already used by the Groq switch). Baseline is 100 tests, not 98.
+- D51 (CSV P1) The CSV layout is a GUESS at what a plain Excel sheet might look like. The real sheet has not been seen. Never claim a match.
+- D52 (CSV P1) PO import creates NEW POs only. Any row whose po_number already exists in the DB is rejected. Avoids silently changing the total and approval status of an existing PO.
+- D53 (CSV P1) In skip_bad_rows mode, if any line of a PO is bad, the whole PO is skipped (other lines get "skipped: another line of this PO is invalid"). Otherwise dropping a bad line could push a PO under the approval threshold and bypass approval.
+- D54 (CSV P1) The file arrives as a raw `text/csv` request body, not multipart upload, to avoid adding python-multipart. In Swagger you paste the CSV; with curl use --data-binary.
+- D55 (CSV P1) Dates must be ISO YYYY-MM-DD. dd/mm/yyyy is rejected because day/month order cannot be guessed safely.
+- D56 (CSV P1) Numbers must be plain decimals (no currency symbol, no thousands separator). Decimal places and size mirror the DB columns (qty 3 dp, price 2 dp) so nothing is silently rounded. Price may be 0, qty may not.
+- D57 (CSV P1) Header names are trimmed and case-insensitive. Extra columns are ignored and listed in `ignored_columns`. A missing or duplicated required column rejects the whole file (row_number 0).
+- D58 (CSV P1) Blank lines and lines starting with `#` are skipped, so sample files can carry a "synthetic" comment. row_number is the physical line number in the file, comments included.
+- D59 (CSV P1) A row may omit trailing OPTIONAL cells entirely (hand-typed CSVs often drop the empty promised_date). Any other wrong cell count is a row error.
+- D60 (CSV P1) UTF-8 with or without BOM, LF or CRLF. Anything else is rejected as "not valid UTF-8".
+- D61 (CSV P1) Report: 201 when anything was imported, 422 when nothing was. All-or-nothing: rows_imported 0, rows_rejected = rows with a problem, valid_rows_not_applied = good rows held back. One error entry per bad field, so one row can have several entries.
+- D62 (CSV P1) A header-only file is rejected with "no data rows after the header" instead of a silent empty success.
+- D63 (CSV P1) The approval status of imported lines comes from the existing `initial_status` and the live `APPROVAL_THRESHOLD_INR`. There is no second copy of the rule.
+- D64 (CSV P2) Receipt import calls `receipts.record_receipt` for every row. It never writes to ledger_events itself (a test asserts the module has no LedgerEvent reference), and a test shows an import produces exactly the same receipts, ledger events and line statuses as the same inputs through POST /receipts.
+- D65 (CSV P2) The only change to existing code: `record_receipt(..., commit=True)`. With commit=False it flushes instead of committing and does not roll back, so the importer owns the transaction. Default behaviour is unchanged (existing receipt and scenario tests still pass).
+- D66 (CSV P2) One transaction per file, one SAVEPOINT per row. A failing row undoes only itself, so later rows still see earlier rows (cumulative tolerance, line status). In all_or_nothing mode any error rolls back the whole file, including rows already applied.
+- D67 (CSV P2) `DuplicateReceipt(Conflict)` added so the importer maps a duplicate key to the idempotency_key field without string matching. The API still returns 409 because it is a Conflict.
+- D68 (CSV P2) A repeated idempotency_key inside a file is flagged on its second occurrence ("duplicate of row N"), even if the first occurrence was itself invalid. A key already in the DB is reported as a duplicate and nothing is applied.
+- D69 (CSV P2) Blank rejected_qty means 0 (the column must still exist). coc_received accepts yes/no/true/false/1/0, case-insensitive, trimmed. Anything else, including blank, is an error.
+- D70 (CSV P2) Receipt rows are independent, so skip_bad_rows skips single rows (unlike PO import, D53). Result depends on row order, because later rows see earlier ones.
+- D71 (CSV P2) All rows of a file are tried even after an error, so the report lists every problem in one pass. In all_or_nothing mode valid_rows_not_applied counts rows that were applied then rolled back.
+- D72 (CSV P3) Exports are read-only and have a clean header row with no comment line, so they open cleanly in Excel. (Sample IMPORT files carry the synthetic comment; exports do not. They hold only this prototype's synthetic data.)
+- D73 (CSV P3) CSV injection guard: any text cell starting with = + - @ tab or CR gets a leading single quote. Numbers, dates and yes/no are never prefixed. Side effect: a lot number that genuinely starts with "-" is exported as "'-...".
+- D74 (CSV P3) balances.csv lists EVERY part in the parts master (zeros if no events) and uses the same SQL aggregate as GET /ledger/balances, so the two cannot disagree.
+- D75 (CSV P3) exceptions.csv has one row per (receipt, flag) for flags rejected, missing_coc, over_delivery. "Quarantine" is not a flag of its own: every quarantined receipt carries missing_coc or over_delivery, and a test asserts all quarantined receipts appear. over_delivery_within_tolerance is excluded (nothing was held).
+- D76 (CSV P3) exceptions.csv shows all four quantities of the receipt (received, accepted, rejected, quarantined) rather than one qty per flag, because the per-flag split is not stored for a receipt with both missing_coc and over_delivery.
+- D77 (CSV P3) exceptions.csv adds quarantine_remaining (quarantine minus releases for that receipt, from the ledger) so a released exception is not shown as still stuck. One column beyond what was asked, for correctness.
+- D78 (CSV P3) ledger-events.csv carries PO number, line, receipt id and lot for traceability. Events with no PO context (issue) leave those cells blank.
+- D79 (CSV P4) The two samples are a linked pair: the receipts file targets the POs the PO file creates (PO-9001 to PO-9003), so both run on a fresh seed. The PO sample can be imported once per database (D52).
+- D80 (CSV P4) The receipts sample deliberately contains a duplicate key and a bad coc value, so default mode rejects the whole file and skip_bad_rows imports 4 of 6. Both outcomes are documented in samples/README.md.
+- D81 (CSV P4) Expected results for the samples were written into samples/README.md before the first run and are encoded in tests/test_i4_samples.py. They refer to PO, line and lot, never to receipt ids, because a rolled-back import still consumes database ids.
+- D82 (CSV P4) Sample dates are fixed (December 2026) and will go stale; they only affect delivery flags, not the import or export results.
+- D83 (CSV P4) DEMO.md gets one new step (8) with sub-steps a to e. The PO sample must be imported first because the receipts sample targets its POs. Step 6 invoice date changed to 2026-10-16 and a note says the app does not check it.
+- D10 (P1) Ledger `qty` is always positive; direction comes from `event_type`. Exact on-hand formula is decided in P3.

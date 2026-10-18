@@ -1,0 +1,8 @@
+# SYNTHETIC SAMPLE: invented data, not from any real company or sheet. Layout is a guess at an Excel sheet.
+po_number,line_no,part_number,supplier,ordered_qty,unit_price_inr,need_by_date,promised_date
+PO-9001,1,FAS-001,Sample Supplier A,200,12.50,2026-12-10,2026-12-08
+PO-9001,2,FAS-002,Sample Supplier A,200,8.00,2026-12-10,
+PO-9002,1,CON-001,Sample Supplier B,40,1850.00,2026-12-15,2026-12-15
+PO-9002,2,HAR-001,Sample Supplier B,300,45.00,2026-12-15,2026-12-20
+PO-9003,1,SEA-001,Sample Supplier C,60,2400.00,2026-12-20,2026-12-18
+PO-9003,2,SEA-002,Sample Supplier C,30,950.00,2026-12-20,2026-12-18
